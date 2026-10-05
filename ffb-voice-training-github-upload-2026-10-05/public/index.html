@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>FFB Voice Role-Play Training</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <section class="setup-panel" aria-labelledby="setup-title">
+        <div>
+          <p class="eyebrow">FFB Voice Role-Play Training</p>
+          <div class="title-row">
+            <h1 id="setup-title">Practice the information call</h1>
+            <span class="beta-badge">Beta</span>
+          </div>
+        </div>
+
+        <nav class="app-tabs" aria-label="App sections">
+          <button id="practice-tab-button" type="button" class="active">Practice</button>
+          <button id="dashboard-tab-button" type="button">Dashboard</button>
+        </nav>
+
+        <form id="setup-form" class="form app-view active">
+          <div id="key-setup" class="key-setup hidden">
+            <h2>Server key needed</h2>
+            <p>Paste the OpenAI API key here to save it locally in `.env`.</p>
+            <label>
+              OpenAI API key
+              <input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" />
+            </label>
+            <button id="save-key-button" type="button">Save key locally</button>
+            <p id="key-status" class="small-status"></p>
+          </div>
+
+          <label>
+            Center
+            <select id="center" name="center" required></select>
+          </label>
+
+          <label>
+            Employee
+            <select id="employeeName" name="employeeName" required></select>
+          </label>
+
+          <fieldset>
+            <legend>Call direction</legend>
+            <div class="segmented">
+              <label><input type="radio" name="callDirection" value="inbound" checked /> Inbound</label>
+              <label><input type="radio" name="callDirection" value="outbound" /> Outbound</label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Difficulty</legend>
+            <div class="segmented">
+              <label><input type="radio" name="difficulty" value="Beginner" checked /> Beginner</label>
+              <label><input type="radio" name="difficulty" value="Curve Balls" /> Curve Balls</label>
+            </div>
+          </fieldset>
+
+          <label id="objection-wrap" class="hidden">
+            Challenge to practice
+            <select id="objectionType" name="objectionType"></select>
+          </label>
+
+          <button id="start-button" type="submit" class="primary">Start live role-play</button>
+        </form>
+
+        <form id="dashboard-filters" class="form app-view">
+          <fieldset>
+            <legend>Centers</legend>
+            <div id="dashboard-centers" class="check-list"></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Employees</legend>
+            <div id="dashboard-employees" class="check-list"></div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Time frame 1</legend>
+            <div class="date-grid">
+              <label>
+                Start
+                <input id="period1-start" type="date" />
+              </label>
+              <label>
+                End
+                <input id="period1-end" type="date" />
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset>
+            <legend>Time frame 2</legend>
+            <div class="date-grid">
+              <label>
+                Start
+                <input id="period2-start" type="date" />
+              </label>
+              <label>
+                End
+                <input id="period2-end" type="date" />
+              </label>
+            </div>
+          </fieldset>
+
+          <button id="refresh-dashboard-button" type="button" class="primary">Refresh dashboard</button>
+        </form>
+      </section>
+
+      <section id="practice-view" class="practice-panel app-view active" aria-live="polite">
+        <div class="status-row">
+          <div>
+            <p class="eyebrow">Live session</p>
+            <h2 id="status-title">Ready</h2>
+          </div>
+          <div class="controls">
+            <button id="mute-button" type="button" disabled>Mute</button>
+            <button id="end-button" type="button" class="danger" disabled>End and evaluate</button>
+          </div>
+        </div>
+
+        <audio id="remote-audio" autoplay></audio>
+
+        <div id="session-meta" class="meta"></div>
+
+        <div id="skill-practice-banner" class="skill-practice-banner hidden">
+          <p>Focused skill practice</p>
+          <h2 id="skill-practice-title"></h2>
+        </div>
+
+        <div class="transcript-shell">
+          <div class="transcript-head">
+            <h2>Transcript</h2>
+            <div class="transcript-actions">
+              <span id="event-status">Not started</span>
+              <button id="toggle-transcript-button" type="button">Expand transcript</button>
+            </div>
+          </div>
+          <ol id="transcript" class="transcript"></ol>
+        </div>
+
+        <div class="report-shell">
+          <div class="transcript-head">
+            <h2>Evaluation report</h2>
+            <span id="save-status"></span>
+          </div>
+          <div id="report" class="report-content">
+            <p class="report-placeholder">Complete a role-play to generate the coaching report.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="dashboard-view" class="practice-panel app-view" aria-live="polite">
+        <div class="status-row">
+          <div>
+            <p class="eyebrow">Dashboard</p>
+            <h2>Practice performance</h2>
+            <p class="score-note">All scores are out of 10 points.</p>
+          </div>
+          <span id="dashboard-status" class="dashboard-status">Loading</span>
+        </div>
+
+        <div class="dashboard-grid">
+          <section class="metric-card">
+            <span>Calls completed</span>
+            <strong id="metric-calls">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Avg score, time frame 1</span>
+            <strong id="metric-score-1">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Avg score, time frame 2</span>
+            <strong id="metric-score-2">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Improvement</span>
+            <strong id="metric-improvement">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Appointment secured rate</span>
+            <strong id="metric-appointment-rate">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Appointment attempt rate</span>
+            <strong id="metric-appointment-attempt-rate">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Active employees</span>
+            <strong id="metric-employees">-</strong>
+          </section>
+          <section class="metric-card">
+            <span>Skill drills completed</span>
+            <strong id="metric-skill-practices">-</strong>
+          </section>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Center comparison</h2>
+            <span>Against selected aggregate</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Center</th>
+                  <th>Calls</th>
+                  <th>Avg score TF1</th>
+                  <th>Avg score TF2</th>
+                  <th>Improvement</th>
+                  <th>Vs aggregate</th>
+                  <th>Appointment rate</th>
+                </tr>
+              </thead>
+              <tbody id="center-comparison"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Employee summary</h2>
+            <span>Time frame 2</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Center</th>
+                  <th>Calls</th>
+                  <th>Avg score</th>
+                  <th>Appointment rate</th>
+                </tr>
+              </thead>
+              <tbody id="employee-summary"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Daily practice completions</h2>
+            <span>Time frame 2</span>
+          </div>
+          <ol id="daily-completions" class="tracking-list"></ol>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Practice mix and score trend</h2>
+            <span>Time frame 2</span>
+          </div>
+          <div class="tracking-grid">
+            <div>
+              <h3>Difficulty mix</h3>
+              <ol id="difficulty-mix" class="tracking-list"></ol>
+            </div>
+            <div>
+              <h3>Score trend</h3>
+              <ol id="score-trend" class="tracking-list"></ol>
+            </div>
+          </div>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Common coaching opportunities</h2>
+            <span>Most frequent main opportunity themes</span>
+          </div>
+          <ol id="common-opportunities" class="tracking-list coaching-opportunities"></ol>
+        </div>
+
+        <div class="dashboard-section">
+          <div class="transcript-head">
+            <h2>Focused skill drills</h2>
+            <span>Time frame 2</span>
+          </div>
+          <div class="tracking-grid">
+            <div>
+              <h3>Skills practiced</h3>
+              <ol id="skills-practiced" class="tracking-list coaching-opportunities"></ol>
+            </div>
+            <div>
+              <h3>Recent skill drills</h3>
+              <ol id="recent-skill-practices" class="recent-sessions"></ol>
+            </div>
+          </div>
+        </div>
+
+        <details class="dashboard-section dashboard-details">
+          <summary>
+            <span>Recent completed practice calls</span>
+            <small>Most recent saved sessions</small>
+          </summary>
+          <ol id="recent-sessions" class="recent-sessions"></ol>
+        </details>
+      </section>
+    </main>
+
+    <div id="practice-progress-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="progress-title">
+      <section class="modal">
+        <p class="eyebrow">Practice requirement</p>
+        <h2 id="progress-title">Weekly progress</h2>
+        <p id="progress-week" class="modal-copy"></p>
+        <div class="progress-grid">
+          <div>
+            <span>Completed this week</span>
+            <strong id="progress-completed">-</strong>
+          </div>
+          <div>
+            <span>Still needed</span>
+            <strong id="progress-remaining">-</strong>
+          </div>
+          <div>
+            <span>Completed today</span>
+            <strong id="progress-today">-</strong>
+          </div>
+        </div>
+        <p id="progress-guidance" class="modal-copy"></p>
+        <button id="progress-continue-button" type="button" class="primary">Clear and begin practice</button>
+      </section>
+    </div>
+
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
