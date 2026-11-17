@@ -35,6 +35,7 @@ Established rubric:
 - Keep MAX and FXB brand information separate. Never invent prices, fees, schedules, policies, or offers.
 - Make coaching specific: cite what the prospect said, provide exact follow-up questions or example wording the representative can use, and explain why those questions matter.
 - Recommend building each question on the prospect's prior answer to uncover motivation and barriers.
+- In Next call direction, provide a complete, usable coaching step: include exact example wording tied to the prospect's actual statement, a relevant follow-up question, and a brief reason. Never end with an introduction such as "for example:" without supplying the example. For an incomplete call, identify that evidence is limited and suggest how to continue; do not invent a prospect answer or medical advice.
 
 Report format:
 Overall score: X/10

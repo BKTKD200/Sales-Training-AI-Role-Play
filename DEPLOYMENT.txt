@@ -1,0 +1,19 @@
+FFB TRAINING - GITHUB / HOSTINGER DEPLOYMENT
+
+Application: https://training.fitfranchisebrands.com
+Repository: BKTKD200/Sales-Training-AI-Role-Play
+Production branch: main (enable only after confirming the Hostinger connection).
+Application root: ffb-voice-training-github-upload-2026-10-05
+Framework: Other. Entry: server.js. Package manager: npm. Build: none.
+Use the existing Node runtime/settings on Hostinger; the entry is compatible with its require loader.
+
+The 2026-11-17 source synchronization reproduces the deployed Accounts v3.5 ZIP. It introduces no roster, credential, training-history or evaluator changes. Application source is now versioned rather than living only in a ZIP.
+
+Preserve all existing Hostinger environment variables. Production requires AUTH_MODE=accounts, STORAGE_MODE=mysql, NODE_ENV=production, HOST=0.0.0.0 and the correct APP_ORIGIN. Keep existing DB connection and model settings. .env.example is documentation for local use, not production configuration. Never copy blank/example values over live secrets.
+
+Production users, password hashes, login sessions, full practice calls, and skill drills are stored in the existing MySQL database. Repository updates must never replace or reset that database. Do not switch to file storage or run rollout provisioning as part of deployment.
+
+Before publishing: inspect diff, run relevant checks, and keep a recent training-record export. That export contains calls/drills only; full database backups are required to back up accounts and sessions too.
+After publishing: confirm Hostinger completed the intended commit and root directory; check sign-in, admin access, and existing dashboard records. Keep the previous deployment available for rollback.
+
+Never commit .env, secrets, node_modules, live data, record backups, logs or private invitation drafts. Update durable project guidance/handoff notes after meaningful milestones. Do not conflate this training app with the separate real-call evaluator.

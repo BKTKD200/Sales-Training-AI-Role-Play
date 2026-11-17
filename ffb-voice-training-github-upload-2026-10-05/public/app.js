@@ -18,9 +18,6 @@ const state = {
 const els = {
   form: document.querySelector("#setup-form"),
   keySetup: document.querySelector("#key-setup"),
-  apiKeyInput: document.querySelector("#apiKeyInput"),
-  saveKeyButton: document.querySelector("#save-key-button"),
-  keyStatus: document.querySelector("#key-status"),
   center: document.querySelector("#center"),
   employeeName: document.querySelector("#employeeName"),
   objectionWrap: document.querySelector("#objection-wrap"),
@@ -28,6 +25,7 @@ const els = {
   startButton: document.querySelector("#start-button"),
   muteButton: document.querySelector("#mute-button"),
   endButton: document.querySelector("#end-button"),
+  cancelSessionButton: document.querySelector("#cancel-session-button"),
   statusTitle: document.querySelector("#status-title"),
   eventStatus: document.querySelector("#event-status"),
   sessionMeta: document.querySelector("#session-meta"),
@@ -82,7 +80,22 @@ boot();
 
 async function boot() {
   const response = await fetch("/api/config");
+  if (response.status === 401) { window.location.replace("/login"); return; }
   state.config = await response.json();
+  const auth = await (await fetch("/api/auth")).json();
+  if(auth.user?.mustChangePassword){window.location.replace('/account');return;}
+  const accountLink=document.querySelector('#account-link');
+  accountLink.hidden=auth.mode!=='accounts';
+  document.querySelector('#admin-link').hidden=!['admin','manager'].includes(auth.user?.role);
+  const identity=document.querySelector('#signed-in-user');
+  identity.hidden=!auth.user;
+  identity.textContent=auth.user?`Signed in: ${auth.user.employeeName||auth.user.username}`:'';
+  const logoutForm = document.querySelector("#logout-form");
+  logoutForm.hidden = !auth.enabled;
+  logoutForm.addEventListener("submit", () => {
+    cleanupConnection();
+    localStorage.removeItem("ffbVoiceRoleplaySignedInSetup");
+  });
 
   els.center.innerHTML = `<option value="">Select center</option>${state.config.centers.map((center) => `<option>${escapeHtml(center)}</option>`).join("")}`;
   renderEmployeeOptions();
@@ -99,8 +112,8 @@ async function boot() {
     updateSetupPreview();
   });
   els.form.addEventListener("submit", startRoleplay);
-  els.saveKeyButton.addEventListener("click", saveApiKey);
   els.endButton.addEventListener("click", endAndEvaluate);
+  els.cancelSessionButton.addEventListener("click", cancelPractice);
   els.muteButton.addEventListener("click", toggleMute);
   els.toggleTranscriptButton.addEventListener("click", toggleTranscript);
   document.addEventListener("click", handleFullReportToggle);
@@ -109,10 +122,23 @@ async function boot() {
   els.dashboardTabButton.addEventListener("click", () => switchTab("dashboard"));
   els.refreshDashboardButton.addEventListener("click", loadDashboard);
   els.progressContinueButton.addEventListener("click", beginRoleplayFromProgress);
+  document.querySelector("#progress-cancel-button").addEventListener("click", cancelProgress);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && !els.progressModal.classList.contains("hidden")) cancelProgress();
+  });
+  els.progressModal.addEventListener("click", event => {
+    if (event.target === els.progressModal) cancelProgress();
+  });
   syncDifficulty();
   refreshHealth();
   setDefaultDashboardDates();
   restoreSignedInSetup();
+  if(auth.user?.role==='trainer'){
+    els.center.value=auth.user.center;
+    renderEmployeeOptions();els.employeeName.value=auth.user.employeeName;
+    els.center.disabled=true;els.employeeName.disabled=true;
+    state.setup=setupFromForm();
+  }
   updateSetupPreview();
   loadDashboard();
 }
@@ -126,29 +152,13 @@ async function refreshHealth() {
   }
 }
 
-async function saveApiKey() {
-  const apiKey = els.apiKeyInput.value.trim();
-  els.keyStatus.textContent = "Saving...";
-  els.saveKeyButton.disabled = true;
-
-  try {
-    await fetchJson("/api/setup-key", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey }),
-    });
-    els.apiKeyInput.value = "";
-    els.keyStatus.textContent = "Saved locally. You can start the role-play now.";
-    await refreshHealth();
-  } catch (error) {
-    els.keyStatus.textContent = error.message;
-  } finally {
-    els.saveKeyButton.disabled = false;
-  }
-}
-
 function switchTab(tabName) {
   const isDashboard = tabName === "dashboard";
+  if (!isDashboard && !state.pc && !els.startButton.disabled) {
+    state.setup = setupFromForm();
+    resetSessionUi();
+    setStatus("Ready", "Choose your next practice.");
+  }
   els.practiceTabButton.classList.toggle("active", !isDashboard);
   els.dashboardTabButton.classList.toggle("active", isDashboard);
   els.setupForm.classList.toggle("active", !isDashboard);
@@ -292,6 +302,10 @@ function formatTrackingValue(item) {
   return value === null || value === undefined || value === "" ? "-" : value;
 }
 
+function skillLabel(value) {
+  return String(value || "").trim().replace(/[:：]\s*$/, "");
+}
+
 function renderCoachingOpportunities(items, emptyText) {
   if (!items.length) return `<li class="empty-state">${escapeHtml(emptyText)}</li>`;
   return items.map((item) => {
@@ -299,7 +313,7 @@ function renderCoachingOpportunities(items, emptyText) {
     const label = String(count) === "1" ? "Appeared in 1 call" : `Appeared in ${count} calls`;
     return `
       <li>
-        <span>${escapeHtml(item.label)}</span>
+        <span>${escapeHtml(skillLabel(item.label))}</span>
         <div class="coaching-opportunity-actions">
           <strong>${escapeHtml(label)}</strong>
           <button type="button" class="practice-skill-button" data-skill="${escapeHtml(item.label)}">Practice this skill</button>
@@ -316,7 +330,7 @@ function renderSkillPracticeList(items, emptyText) {
     const label = String(count) === "1" ? "Practiced in 1 drill" : `Practiced in ${count} drills`;
     return `
       <li>
-        <span>${escapeHtml(item.label)}</span>
+        <span>${escapeHtml(skillLabel(item.label))}</span>
         <div class="coaching-opportunity-actions">
           <strong>${escapeHtml(label)}</strong>
         </div>
@@ -331,7 +345,7 @@ function renderRecentSkillPractices(items) {
     <li>
       <strong>${escapeHtml(item.employeeName)}</strong>
       <span>${escapeHtml(item.center)} · ${formatDateTime(item.savedAt)}</span>
-      <span>${escapeHtml(item.focusSkill)}</span>
+      <span>${escapeHtml(skillLabel(item.focusSkill))}</span>
     </li>
   `).join("");
 }
@@ -339,6 +353,7 @@ function renderRecentSkillPractices(items) {
 async function handleSkillPracticeClick(event) {
   const button = event.target.closest(".practice-skill-button");
   if (!button) return;
+  if (state.pc || els.startButton.disabled) return;
 
   const focusSkill = button.dataset.skill || "";
   const formSetup = setupFromForm();
@@ -352,6 +367,7 @@ async function handleSkillPracticeClick(event) {
   }
 
   rememberSignedInSetup(setup);
+  switchTab("practice");
   state.setup = {
     ...setup,
     practiceMode: "skill",
@@ -360,11 +376,10 @@ async function handleSkillPracticeClick(event) {
     objectionType: "none",
   };
 
-  switchTab("practice");
   resetSessionUi();
   renderSkillPracticeBanner(focusSkill);
   renderMeta(state.setup);
-  renderReport(`Focused skill practice: ${focusSkill}`, { plain: true });
+  renderReport(`Focused skill practice: ${skillLabel(focusSkill)}`, { plain: true });
   await beginRoleplay();
 }
 
@@ -508,6 +523,8 @@ function restoreSignedInSetup() {
 async function startRoleplay(event) {
   event.preventDefault();
   state.setup = setupFromForm();
+  resetSessionUi();
+  setStatus("Ready", "Choose your next practice.");
   rememberSignedInSetup(state.setup);
   renderSkillPracticeBanner(null);
   state.pendingProgressSetup = state.setup;
@@ -528,6 +545,20 @@ async function beginRoleplayFromProgress() {
   hideProgressModal();
   if (state.pendingProgressSetup) state.setup = state.pendingProgressSetup;
   await beginRoleplay();
+}
+
+function cancelProgress() {
+  hideProgressModal();
+  state.pendingProgressSetup = null;
+  els.employeeName.focus();
+}
+
+function cancelPractice() {
+  if (!window.confirm("Cancel this practice without saving a call or skill drill? You can then choose a different employee.")) return;
+  resetSessionUi();
+  prepareForNextPractice();
+  setStatus("Practice canceled", "Nothing saved. Choose your center and employee, then start again.");
+  els.employeeName.focus();
 }
 
 async function beginRoleplay() {
@@ -552,7 +583,9 @@ async function beginRoleplay() {
     setStatus("Connecting", "Creating live voice session");
 
     state.pc = new RTCPeerConnection();
+    const connection = state.pc;
     state.pc.ontrack = (event) => {
+      if (state.pc !== connection) return;
       els.remoteAudio.srcObject = event.streams[0];
     };
     state.localStream.getTracks().forEach((track) => state.pc.addTrack(track, state.localStream));
@@ -579,6 +612,7 @@ async function beginRoleplay() {
     setStatus("Connected", "Waiting for prospect");
     els.muteButton.disabled = false;
     els.endButton.disabled = false;
+    els.cancelSessionButton.disabled = false;
   } catch (error) {
     console.error(error);
     setStatus("Could not start", friendlyStartError(error));
@@ -597,6 +631,7 @@ function showProgressModal(progress) {
     ? `${progress.employeeName} needs ${progress.remainingThisWeek} more practice call${progress.remainingThisWeek === 1 ? "" : "s"} to hit the weekly target.`
     : `${progress.employeeName} has met the weekly target. Extra practice still counts.`;
   els.progressModal.classList.remove("hidden");
+  document.querySelector("#progress-cancel-button").focus();
 }
 
 function hideProgressModal() {
@@ -605,10 +640,13 @@ function hideProgressModal() {
 
 function wireDataChannel(dc) {
   dc.addEventListener("open", () => {
+    if (state.dc !== dc) return;
     setStatus("Connected", "Role-play in progress");
   });
 
   dc.addEventListener("message", (message) => {
+    // A closed session can still have queued events. Never show them in a new practice.
+    if (state.dc !== dc) return;
     let event;
     try {
       event = JSON.parse(message.data);
@@ -668,6 +706,7 @@ function appendTranscript(speaker, delta) {
 }
 
 async function endAndEvaluate() {
+  els.cancelSessionButton.disabled = true;
   if (state.setup?.practiceMode === "skill") {
     endSkillPractice();
     return;
@@ -717,6 +756,7 @@ async function endAndEvaluate() {
 }
 
 async function endSkillPractice() {
+  els.cancelSessionButton.disabled = true;
   els.endButton.disabled = true;
   els.muteButton.disabled = true;
   els.startButton.disabled = true;
@@ -745,7 +785,7 @@ async function endSkillPractice() {
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || payload.error || "Could not save skill practice.");
 
-    renderReport(`Focused skill practice complete: ${state.setup.focusSkill}`, { plain: true });
+    renderReport(`Focused skill practice complete: ${skillLabel(state.setup.focusSkill)}`, { plain: true });
     els.saveStatus.textContent = payload.saved?.filename ? "Saved as focused skill drill" : "Saved";
     setStatus("Skill practice complete", "Saved separately from scored practice calls.");
     loadDashboard();
@@ -760,9 +800,9 @@ async function endSkillPractice() {
 
 function setupFromForm() {
   const data = new FormData(els.form);
-  const center = String(data.get("center") || "").trim();
+  const center = String(els.center.value || "").trim();
   return {
-    employeeName: String(data.get("employeeName") || "").trim(),
+    employeeName: String(els.employeeName.value || "").trim(),
     center,
     brand: state.config?.brandByCenter?.[center] || "",
     callDirection: String(data.get("callDirection") || "").trim(),
@@ -773,7 +813,9 @@ function setupFromForm() {
 
 async function fetchJson(url, options) {
   const response = await fetch(url, options);
+  if(response.status===401){cleanupConnection();window.location.replace('/login');throw new Error('Sign in to continue.');}
   const payload = await response.json();
+  if(payload.code==='PASSWORD_CHANGE_REQUIRED'){window.location.replace('/account');throw new Error('Change your temporary password to continue.');}
   if (!response.ok) throw new Error(payload.detail || payload.error || "Request failed.");
   return payload;
 }
@@ -820,7 +862,7 @@ function renderSkillPracticeBanner(skill) {
     return;
   }
 
-  els.skillPracticeTitle.textContent = formatSkillTitle(skill);
+  els.skillPracticeTitle.textContent = formatSkillTitle(skillLabel(skill));
   els.skillPracticeBanner.classList.remove("hidden");
   document.body.classList.add("skill-practice-mode");
 }
@@ -896,7 +938,9 @@ function parseReportBlocks(text) {
   const blocks = [];
   let current = null;
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const headingLine=rawLine.replace(/^#{1,6}\s*/, '').replace(/^\*\*(.*?)\*\*:?$/, '$1');
+    const line=/^Overall score:/i.test(headingLine)||isReportHeading(headingLine)?headingLine:rawLine;
     if (/^Overall score:/i.test(line)) {
       blocks.push({ type: "score", text: line });
       current = null;
@@ -964,7 +1008,9 @@ function renderShortReport(blocks) {
 
   const best = firstUsefulItem(whatWentWell?.items) || "Repeat the strongest Discovery, listening, Match, Invite, or call-control behavior from this call.";
   const improve = firstUsefulItem(mainOpportunity?.items) || "Keep building each question from what the prospect just said, then move clearly toward a specific appointment.";
-  const example = firstUsefulItem(nextCallDirection?.items) || extractExample(improve) || "Try: “Based on what you shared, what would make it worth coming in for a first appointment this week?”";
+  const examples = nextCallDirection?.items?.length
+    ? nextCallDirection.items
+    : [extractExample(improve) || "Try: “What prompted you to reach out, and what would you most like to get out of a fitness program?” Listen to their answer and ask a follow-up about that goal before recommending a visit."];
 
   return `
     <section class="quick-report">
@@ -979,7 +1025,7 @@ function renderShortReport(blocks) {
           <h3>${escapeHtml(improve)}</h3>
           <div class="try-this">
             <strong>Try this:</strong>
-            <span>${escapeHtml(example)}</span>
+            <div>${examples.map(example => `<p>${escapeHtml(example)}</p>`).join("")}</div>
           </div>
         </article>
       </div>
@@ -1070,12 +1116,16 @@ function sendClientEvent(event) {
 }
 
 function cleanupConnection() {
+  els.cancelSessionButton.disabled = true;
   for (const track of state.localStream?.getTracks() || []) track.stop();
   state.localStream = null;
-  state.dc?.close();
+  const channel = state.dc;
   state.dc = null;
+  channel?.close();
   state.pc?.close();
   state.pc = null;
+  els.remoteAudio.pause();
+  els.remoteAudio.srcObject = null;
 }
 
 function prepareForNextPractice() {

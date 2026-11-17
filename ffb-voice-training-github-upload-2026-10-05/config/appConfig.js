@@ -5,6 +5,7 @@ export const centers = [
   "Test",
   "Fairless Hills",
   "Hillsboro",
+  "HQ",
 ];
 
 export const employeesByCenter = {
@@ -14,6 +15,7 @@ export const employeesByCenter = {
   Test: ["Bryan K."],
   "Fairless Hills": ["Shannon"],
   Hillsboro: ["Paul"],
+  HQ: ["Hayley", "Tony"],
 };
 
 export const brandByCenter = {
@@ -23,6 +25,7 @@ export const brandByCenter = {
   Test: "MAX",
   "Fairless Hills": "MAX",
   Hillsboro: "MAX",
+  HQ: "MAX",
 };
 
 export const brands = {

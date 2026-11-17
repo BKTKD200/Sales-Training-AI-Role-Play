@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -8,13 +8,29 @@ import { fileURLToPath } from "node:url";
 import { brandByCenter, brands, centers, curveBallChallenges, employeesByCenter, prospectProfiles, randomObjections } from "./config/appConfig.js";
 import { buildLiveRoleplayInstructions } from "./prompts/liveRoleplay.js";
 import { buildEvaluatorInstructions } from "./prompts/evaluator.js";
+import { createAccessGate } from "./accessGate.js";
+import { createStorage, recordFilename } from "./storage.js";
+import { createAccountGate, readBody } from "./accountAuth.js";
+import { handleAdmin } from "./adminApi.js";
+import { authorizedSetup, visibleRoster as rosterForUser, dashboardOptions } from "./accessPolicy.js";
 
+// Hostinger's LiteSpeed launcher requires this module synchronously.
+// Keep asynchronous database/auth initialization inside startup, not at module scope.
+async function start() {
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(__dirname, "public");
-const dataDir = path.join(__dirname, "data", "sessions");
-const skillPracticeDir = path.join(__dirname, "data", "skill-practices");
-
 loadDotEnv();
+
+const storageRoot = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
+if(process.env.NODE_ENV==='production'&&process.env.STORAGE_MODE!=='mysql')throw new Error('Production requires STORAGE_MODE=mysql so updates retain training data.');
+if(process.env.AUTH_MODE&&!['shared','accounts'].includes(process.env.AUTH_MODE))throw new Error('AUTH_MODE must be shared or accounts.');
+const store = await createStorage(process.env, storageRoot);
+const accountsEnabled = process.env.AUTH_MODE === "accounts";
+const accessGate = accountsEnabled ? await createAccountGate({store, env:process.env}) : createAccessGate({
+  password: process.env.APP_PASSWORD || "",
+  production: process.env.NODE_ENV === "production",
+  origin: process.env.APP_ORIGIN || "",
+});
 
 const port = Number(process.env.PORT || 3000);
 const host = process.env.HOST || "127.0.0.1";
@@ -31,16 +47,23 @@ const mimeTypes = {
   ".css": "text/css; charset=utf-8",
   ".json": "application/json; charset=utf-8",
   ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
 
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host}`);
+    if (await accessGate(req, res, url)) return;
+    if (await handleAdmin(req, res, url, store, employeesByCenter)) return;
+    if (req.method === "GET" && url.pathname === "/api/login-mode") return sendJson(res,{mode:"shared"});
+    if (req.method === "GET" && url.pathname === "/account") return await serveStatic("/account.html", res);
+    if (req.method === "GET" && url.pathname === "/admin") return await serveStatic("/admin.html", res);
+    if (req.method === "GET" && url.pathname === "/login") return await serveStatic("/login.html", res);
 
     if (req.method === "GET" && url.pathname === "/api/config") {
       return sendJson(res, {
-        centers,
-        employeesByCenter,
+        centers: Object.keys(visibleRoster(req.user)),
+        employeesByCenter: visibleRoster(req.user),
         brandByCenter,
         brands: Object.keys(brands),
         difficulties: ["Beginner", "Curve Balls"],
@@ -60,15 +83,11 @@ const server = createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/api/dashboard") {
-      return await handleDashboard(url, res);
+      return await handleDashboard(url, res, req.user);
     }
 
     if (req.method === "GET" && url.pathname === "/api/progress") {
-      return await handleProgress(url, res);
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/setup-key") {
-      return await handleSetupKey(req, res);
+      return await handleProgress(url, res, req.user);
     }
 
     if (req.method === "POST" && url.pathname === "/api/live-session") {
@@ -102,7 +121,7 @@ async function handleLiveSession(req, res) {
   requireApiKey();
 
   const body = await readJson(req);
-  const setup = normalizeSetup(body.setup || {});
+  const setup = normalizeSetup(authorizedSetup(body.setup || {}, req.user));
   const offerSdp = String(body.sdp || "");
 
   if (!offerSdp.startsWith("v=")) {
@@ -157,35 +176,11 @@ async function handleLiveSession(req, res) {
   });
 }
 
-async function handleSetupKey(req, res) {
-  const body = await readJson(req);
-  const apiKey = String(body.apiKey || "").trim();
-
-  if (!apiKey.startsWith("sk-")) {
-    return sendJson(res, { error: "That does not look like an OpenAI API key." }, 400);
-  }
-
-  const envPath = path.join(__dirname, ".env");
-  const existing = existsSync(envPath) ? readFileSync(envPath, "utf8") : "";
-  const nextLine = `OPENAI_API_KEY=${apiKey}`;
-  let next;
-
-  if (/^OPENAI_API_KEY=/m.test(existing)) {
-    next = existing.replace(/^OPENAI_API_KEY=.*$/m, nextLine);
-  } else {
-    next = `${nextLine}\n${existing}`;
-  }
-
-  await writeFile(envPath, next);
-  process.env.OPENAI_API_KEY = apiKey;
-  sendJson(res, { ok: true });
-}
-
 async function handleEvaluate(req, res) {
   requireApiKey();
 
   const body = await readJson(req);
-  const setup = normalizeSetup(body.setup || {});
+  const setup = normalizeSetup(authorizedSetup(body.setup || {}, req.user));
   const transcript = Array.isArray(body.transcript) ? body.transcript : [];
   const transcriptText = transcriptToText(transcript);
 
@@ -215,13 +210,13 @@ async function handleEvaluate(req, res) {
 
   const result = JSON.parse(text);
   const report = extractResponseText(result);
-  const saved = await saveSession({ setup, transcript, transcriptText, report });
+  const saved = await saveSession({ setup, transcript, transcriptText, report }, req.user?.id);
   sendJson(res, { report, saved });
 }
 
 async function handleSkillPractice(req, res) {
   const body = await readJson(req);
-  const setup = normalizeSetup(body.setup || {});
+  const setup = normalizeSetup(authorizedSetup(body.setup || {}, req.user));
   const transcript = Array.isArray(body.transcript) ? body.transcript : [];
   if (setup.practiceMode !== "skill" || !setup.focusSkill) {
     return sendJson(res, { error: "Focused skill practice details are required." }, 400);
@@ -231,13 +226,13 @@ async function handleSkillPractice(req, res) {
     setup,
     transcript,
     transcriptText: transcriptToText(transcript),
-  });
+  }, req.user?.id);
   sendJson(res, { saved });
 }
 
-async function handleDashboard(url, res) {
-  const sessions = await loadSavedSessions();
-  const skillPractices = await loadSavedSkillPractices();
+async function handleDashboard(url, res, user) {
+  const sessions = await loadSavedSessions(user);
+  const skillPractices = await loadSavedSkillPractices(user);
   const filters = parseDashboardFilters(url);
   const filtered = sessions.filter((session) => {
     if (filters.centers.length && !filters.centers.includes(session.center)) return false;
@@ -253,8 +248,7 @@ async function handleDashboard(url, res) {
   const period1 = filterByDateRange(filtered, filters.period1Start, filters.period1End);
   const period2 = filterByDateRange(filtered, filters.period2Start, filters.period2End);
   const skillPeriod2 = filterByDateRange(filteredSkillPractices, filters.period2Start, filters.period2End);
-  const allCenters = unique([...centers, ...sessions.map((session) => session.center), ...skillPractices.map((practice) => practice.center)]);
-  const allEmployees = unique([...Object.values(employeesByCenter).flat(), ...sessions.map((session) => session.employeeName), ...skillPractices.map((practice) => practice.employeeName)]);
+  const options = dashboardOptions(user, employeesByCenter, [...sessions, ...skillPractices]);
 
   sendJson(res, {
     filters: {
@@ -265,10 +259,7 @@ async function handleDashboard(url, res) {
       period2Start: filters.period2Start,
       period2End: filters.period2End,
     },
-    options: {
-      centers: allCenters,
-      employees: allEmployees,
-    },
+    options,
     aggregate: {
       period1: summarizeSessions(period1),
       period2: summarizeSessions(period2),
@@ -285,14 +276,15 @@ async function handleDashboard(url, res) {
   });
 }
 
-async function handleProgress(url, res) {
-  const employeeName = clean(url.searchParams.get("employeeName"));
-  const center = clean(url.searchParams.get("center"));
+async function handleProgress(url, res, user) {
+  const employeeName = user?.role === "trainer" ? user.employeeName : clean(url.searchParams.get("employeeName"));
+  const center = user?.role === "trainer" ? user.center : clean(url.searchParams.get("center"));
+  if(user?.role==='manager'&&!user.allowedCenters.includes(center))return sendJson(res,{error:'Center access is not allowed.'},403);
   if (!employeeName || !center) {
     return sendJson(res, { error: "Employee and center are required." }, 400);
   }
 
-  const sessions = await loadSavedSessions();
+  const sessions = await loadSavedSessions(user);
   const now = new Date();
   const week = weekRange(now);
   const weekSessions = sessions.filter((session) => (
@@ -321,68 +313,14 @@ async function handleProgress(url, res) {
   });
 }
 
-async function loadSavedSessions() {
-  if (!existsSync(dataDir)) return [];
-  const files = (await readdir(dataDir)).filter((file) => file.endsWith(".json"));
-  const sessions = [];
-
-  for (const file of files) {
-    try {
-      const raw = await readFile(path.join(dataDir, file), "utf8");
-      const parsed = JSON.parse(raw);
-      const setup = parsed.setup || {};
-      const report = String(parsed.report || "");
-      sessions.push({
-        id: file,
-        employeeName: setup.employeeName || "Unknown",
-        center: setup.center || "Unknown",
-        brand: setup.brand || "",
-        callDirection: setup.callDirection || "",
-        difficulty: setup.difficulty || "",
-        objectionType: setup.objectionType || "none",
-        savedAt: parsed.savedAt || dateFromSessionFilename(file),
-        score: extractScore(report),
-        appointmentSecured: extractAppointmentSecured(report),
-        appointmentAttempted: extractAppointmentAttempted(report),
-        mainOpportunity: extractMainOpportunity(report),
-        transcript: Array.isArray(parsed.transcript) ? parsed.transcript : [],
-        transcriptText: parsed.transcriptText || transcriptToText(Array.isArray(parsed.transcript) ? parsed.transcript : []),
-        report,
-      });
-    } catch (error) {
-      console.warn(`Skipping unreadable session ${file}:`, error.message);
-    }
-  }
-
-  return sessions;
+async function loadSavedSessions(user) {
+  return (await store.listRecords('call',user)).map(parsed=>{
+    const setup=parsed.setup||{};const report=String(parsed.report||'');
+    return {id:parsed.filename,employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',callDirection:setup.callDirection||'',difficulty:setup.difficulty||'',objectionType:setup.objectionType||'none',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),score:extractScore(report),appointmentSecured:extractAppointmentSecured(report),appointmentAttempted:extractAppointmentAttempted(report),mainOpportunity:extractMainOpportunity(report),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[]),report};
+  });
 }
-
-async function loadSavedSkillPractices() {
-  if (!existsSync(skillPracticeDir)) return [];
-  const files = (await readdir(skillPracticeDir)).filter((file) => file.endsWith(".json"));
-  const practices = [];
-
-  for (const file of files) {
-    try {
-      const raw = await readFile(path.join(skillPracticeDir, file), "utf8");
-      const parsed = JSON.parse(raw);
-      const setup = parsed.setup || {};
-      practices.push({
-        id: file,
-        employeeName: setup.employeeName || "Unknown",
-        center: setup.center || "Unknown",
-        brand: setup.brand || "",
-        focusSkill: setup.focusSkill || "Focused skill",
-        savedAt: parsed.savedAt || dateFromSessionFilename(file),
-        transcript: Array.isArray(parsed.transcript) ? parsed.transcript : [],
-        transcriptText: parsed.transcriptText || transcriptToText(Array.isArray(parsed.transcript) ? parsed.transcript : []),
-      });
-    } catch (error) {
-      console.warn(`Skipping unreadable skill practice ${file}:`, error.message);
-    }
-  }
-
-  return practices;
+async function loadSavedSkillPractices(user) {
+  return (await store.listRecords('skill',user)).map(parsed=>{const setup=parsed.setup||{};return {id:parsed.filename,employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',focusSkill:setup.focusSkill||'Focused skill',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[])};});
 }
 
 function parseDashboardFilters(url) {
@@ -694,25 +632,14 @@ function shuffle(items) {
   return items;
 }
 
-async function saveSession(record) {
-  await mkdir(dataDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const safeName = record.setup.employeeName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "employee";
-  const filename = `${stamp}-${safeName}-${record.setup.brand}-${record.setup.difficulty.replace(/\s+/g, "-")}.json`;
-  const fullPath = path.join(dataDir, filename);
-  await writeFile(fullPath, JSON.stringify({ ...record, savedAt: new Date().toISOString() }, null, 2));
-  return { filename };
+async function saveSession(record,userId) {
+  return store.saveRecord('call',recordFilename('call',record),{...record,savedAt:new Date().toISOString()},userId||null);
 }
-
-async function saveSkillPractice(record) {
-  await mkdir(skillPracticeDir, { recursive: true });
-  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const safeName = record.setup.employeeName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "employee";
-  const safeSkill = record.setup.focusSkill.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || "skill";
-  const filename = `${stamp}-${safeName}-${safeSkill}.json`;
-  const fullPath = path.join(skillPracticeDir, filename);
-  await writeFile(fullPath, JSON.stringify({ ...record, savedAt: new Date().toISOString(), recordType: "skill-practice" }, null, 2));
-  return { filename };
+async function saveSkillPractice(record,userId) {
+  return store.saveRecord('skill',recordFilename('skill',record),{...record,savedAt:new Date().toISOString(),recordType:'skill-practice'},userId||null);
+}
+function visibleRoster(user) {
+  return rosterForUser(user,employeesByCenter);
 }
 
 function transcriptToText(transcript) {
@@ -750,10 +677,7 @@ async function serveStatic(pathname, res) {
 }
 
 async function readJson(req) {
-  const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
-  const raw = Buffer.concat(chunks).toString("utf8");
-  return raw ? JSON.parse(raw) : {};
+  return readBody(req);
 }
 
 function sendJson(res, payload, status = 200) {
@@ -803,3 +727,9 @@ function loadDotEnv() {
     if (key && process.env[key] === undefined) process.env[key] = value;
   }
 }
+}
+
+start().catch((error) => {
+  console.error('FFB startup failed:', error);
+  process.exit(1);
+});

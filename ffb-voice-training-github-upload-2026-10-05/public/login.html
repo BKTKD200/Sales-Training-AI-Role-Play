@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Sign in | FFB Training</title>
+    <link rel="stylesheet" href="/styles.css?v=20261006-v35" />
+    <script src="/login.js?v=20261006-v35" defer></script>
+  <link rel="icon" type="image/png" href="/favicon.png?v=20261006"></head>
+  <body class="login-page">
+    <main class="login-card"><img class="brand-logo" src="/brand-logo.png" alt="Fit Franchise Brands">
+      <p class="eyebrow">FFB Voice Role-Play Training</p>
+      <h1 id="login-heading">Sign in</h1>
+      <p id="login-help">Loading sign-in options…</p>
+      <form id="login-form" class="form">
+        <label id="username-label" hidden>Username or email
+          <input type="text" id="username" autocomplete="username" maxlength="100" />
+        </label>
+        <label><span id="password-label">Password</span>
+          <input type="password" id="team-password" autocomplete="current-password" required maxlength="1024" />
+        </label>
+        <button type="submit" class="primary" disabled>Loading…</button>
+        <p id="login-status" role="status" aria-live="polite"></p>
+      </form>
+    </main>
+  </body>
+</html>

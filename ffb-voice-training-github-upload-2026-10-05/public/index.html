@@ -4,13 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>FFB Voice Role-Play Training</title>
-    <link rel="stylesheet" href="/styles.css" />
-  </head>
+    <link rel="stylesheet" href="/styles.css?v=20261006-v35" />
+  <link rel="icon" type="image/png" href="/favicon.png?v=20261006"></head>
   <body>
     <main class="app">
       <section class="setup-panel" aria-labelledby="setup-title">
         <div>
-          <p class="eyebrow">FFB Voice Role-Play Training</p>
+          <div class="sidebar-brand"><img class="brand-logo" src="/brand-logo-dark.png" alt="Fit Franchise Brands"></div><p class="eyebrow">FFB Voice Role-Play Training</p>
           <div class="title-row">
             <h1 id="setup-title">Practice the information call</h1>
             <span class="beta-badge">Beta</span>
@@ -22,16 +22,16 @@
           <button id="dashboard-tab-button" type="button">Dashboard</button>
         </nav>
 
+        <form id="logout-form" method="post" action="/logout" hidden>
+          <button type="submit">Sign out</button>
+        </form>
+        <p id="signed-in-user" hidden></p>
+        <nav class="account-actions" aria-label="Account settings"><a id="account-link" href="/account" hidden>Change password</a><a id="admin-link" href="/admin" hidden>Manage accounts and backups</a></nav>
+
         <form id="setup-form" class="form app-view active">
           <div id="key-setup" class="key-setup hidden">
             <h2>Server key needed</h2>
-            <p>Paste the OpenAI API key here to save it locally in `.env`.</p>
-            <label>
-              OpenAI API key
-              <input id="apiKeyInput" type="password" autocomplete="off" spellcheck="false" />
-            </label>
-            <button id="save-key-button" type="button">Save key locally</button>
-            <p id="key-status" class="small-status"></p>
+            <p>The administrator needs to finish server setup before practice can begin.</p>
           </div>
 
           <label>
@@ -119,6 +119,7 @@
           </div>
           <div class="controls">
             <button id="mute-button" type="button" disabled>Mute</button>
+            <button id="cancel-session-button" type="button" disabled>Cancel practice</button>
             <button id="end-button" type="button" class="danger" disabled>End and evaluate</button>
           </div>
         </div>
@@ -323,10 +324,11 @@
           </div>
         </div>
         <p id="progress-guidance" class="modal-copy"></p>
-        <button id="progress-continue-button" type="button" class="primary">Clear and begin practice</button>
+        <button id="progress-cancel-button" type="button">Back to setup</button>
+        <button id="progress-continue-button" type="button" class="primary">Begin practice</button>
       </section>
     </div>
 
-    <script type="module" src="/app.js"></script>
+    <script type="module" src="/app.js?v=20261006-v35"></script>
   </body>
 </html>

@@ -16,6 +16,33 @@
   box-sizing: border-box;
 }
 
+.login-page {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+
+.login-card {
+  width: min(100%, 460px);
+  padding: 36px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.login-card h1 { font-size: 32px; }
+.login-card > p { line-height: 1.5; }
+#login-status { min-height: 24px; color: var(--ink); font-weight: 600; }
+#login-status.login-error { color: var(--danger); }
+.try-this p { margin: 0 0 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.admin-page main { max-width: 900px; margin: 24px auto; padding: 24px; }
+.admin-page .panel { margin-bottom: 24px; padding: 24px; }
+.admin-page .form { max-width: 520px; }
+.admin-page input, .admin-page select { width: 100%; }
+.admin-page #admin-status { position: sticky; top: 0; background: var(--panel); padding: 12px; border: 1px solid var(--line); }
+#account-status { font-weight: 600; }
+
 body {
   margin: 0;
   min-height: 100vh;
@@ -1026,3 +1053,17 @@ td {
     margin-left: 0;
   }
 }
+
+.brand-logo { display: block; width: min(100%, 230px); height: auto; margin-bottom: 18px; }
+#manager-center-options input { width: auto; }
+
+/* Keep account actions readable against the dark sidebar. */
+.account-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.account-actions a { display: flex; align-items: center; justify-content: center; min-height: 48px; padding: 12px 16px; border-radius: 8px; background: var(--brand); color: #fff; font-size: 1rem; font-weight: 800; text-align: center; text-decoration: none; line-height: 1.35; }
+.account-actions a:hover { background: var(--brand-strong); }
+.account-actions a:focus-visible { outline: 3px solid #fff; outline-offset: 3px; }
+.account-actions a[hidden] { display: none; }
+.sidebar-brand { width: fit-content; max-width: 100%; margin-bottom: 20px; background: transparent; }
+.sidebar-brand .brand-logo { width: 230px; max-width: 100%; margin: 0; }
+.setup-panel .check-list label { color: #202020; }
+[hidden] { display: none !important; }
