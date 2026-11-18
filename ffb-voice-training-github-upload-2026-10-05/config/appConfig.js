@@ -10,7 +10,7 @@ export const centers = [
 
 export const employeesByCenter = {
   Freehold: ["Jenn N."],
-  Marlboro: ["Charlie T."],
+  Marlboro: ["Charlie T.", "Emily Gershon"],
   Manalapan: ["Mary V."],
   Test: ["Bryan K."],
   "Fairless Hills": ["Shannon"],
