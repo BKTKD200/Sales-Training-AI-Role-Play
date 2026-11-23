@@ -177,17 +177,26 @@ async function handleLiveSession(req, res) {
 }
 
 async function handleEvaluate(req, res) {
-  requireApiKey();
-
   const body = await readJson(req);
-  const setup = normalizeSetup(authorizedSetup(body.setup || {}, req.user));
-  const transcript = Array.isArray(body.transcript) ? body.transcript : [];
+  let existing;
+  if (body.recordId) {
+    if(typeof body.recordId !== 'string' || !/^[-a-zA-Z0-9._]{1,250}\.json$/.test(body.recordId))return sendJson(res,{error:'Invalid saved practice identifier.'},400);
+    existing = (await store.listRecords('call', req.user, {ids:[body.recordId]})).find(record => record.filename === body.recordId);
+    if (!existing) return sendJson(res, {error:'Saved practice was not found in your accessible history.'}, 404);
+    if (existing.evaluationStatus !== 'pending') return sendJson(res, {report:existing.report,saved:{filename:existing.filename}});
+  }
+  const setup = normalizeSetup(authorizedSetup(existing?.setup || body.setup || {}, req.user));
+  const transcript = existing?.transcript || (Array.isArray(body.transcript) ? body.transcript : []);
   const transcriptText = transcriptToText(transcript);
 
   if (!transcriptText.trim()) {
     return sendJson(res, { error: "No transcript was captured, so evaluation cannot run." }, 400);
   }
 
+  const pending = existing || {setup,transcript,transcriptText,report:'',evaluationStatus:'pending',savedAt:new Date().toISOString(),recordedBy:req.user?.id||null};
+  const saved = existing ? {filename:existing.filename} : await saveSession(pending, req.user?.id);
+  try {
+  requireApiKey();
   const instructions = buildEvaluatorInstructions({ setup, transcriptText });
   const response = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -200,18 +209,26 @@ async function handleEvaluate(req, res) {
       model: evaluatorModel,
       input: instructions,
     }),
+    signal: AbortSignal.timeout(120000),
   });
 
   const text = await response.text();
   if (!response.ok) {
     console.error("Evaluation error:", text);
-    return sendJson(res, { error: "Could not evaluate the role-play.", detail: safeDetail(text) }, response.status);
+    throw new Error('Evaluation service is unavailable. Your transcript is saved; retry evaluation from your dashboard.');
   }
 
   const result = JSON.parse(text);
   const report = extractResponseText(result);
-  const saved = await saveSession({ setup, transcript, transcriptText, report }, req.user?.id);
+  if (!report || report === 'No evaluator text was returned.' || extractScore(report) === null) throw new Error('No scored evaluation was returned. Your transcript is saved; retry evaluation from your dashboard.');
+  const {filename, ...record} = pending;
+  const outcome = extractAppointmentOutcome(report);
+  await store.updateRecord('call',saved.filename,{...record,report,evaluationStatus:'complete',appointmentOutcome:{...outcome,source:'report-section-v2'},dashboardSummary:{score:extractScore(report),appointmentSecured:outcome.secured,appointmentAttempted:outcome.attempted,mainOpportunity:extractMainOpportunity(report)}},req.user);
   sendJson(res, { report, saved });
+  } catch (error) {
+    console.error('Saved practice awaiting evaluation:', error.message);
+    sendJson(res,{saved,pending:true,error:'Your transcript is saved. Evaluation is pending; use Retry evaluation in your dashboard.'});
+  }
 }
 
 async function handleSkillPractice(req, res) {
@@ -221,6 +238,7 @@ async function handleSkillPractice(req, res) {
   if (setup.practiceMode !== "skill" || !setup.focusSkill) {
     return sendJson(res, { error: "Focused skill practice details are required." }, 400);
   }
+  if (!transcriptToText(transcript).trim()) return sendJson(res,{error:'No transcript was captured, so the drill cannot be saved.'},400);
 
   const saved = await saveSkillPractice({
     setup,
@@ -231,7 +249,8 @@ async function handleSkillPractice(req, res) {
 }
 
 async function handleDashboard(url, res, user) {
-  const sessions = await loadSavedSessions(user);
+  const savedSessions = await loadSavedSessions(user);
+  const sessions = savedSessions.filter(session => session.evaluationStatus !== 'pending');
   const skillPractices = await loadSavedSkillPractices(user);
   const filters = parseDashboardFilters(url);
   const filtered = sessions.filter((session) => {
@@ -249,6 +268,11 @@ async function handleDashboard(url, res, user) {
   const period2 = filterByDateRange(filtered, filters.period2Start, filters.period2End);
   const skillPeriod2 = filterByDateRange(filteredSkillPractices, filters.period2Start, filters.period2End);
   const options = dashboardOptions(user, employeesByCenter, [...sessions, ...skillPractices]);
+  const history = filterByDateRange(savedSessions.filter(session => (!filters.centers.length || filters.centers.includes(session.center)) && (!filters.employees.length || filters.employees.includes(session.employeeName))), filters.period2Start, filters.period2End).sort((a,b)=>new Date(b.savedAt)-new Date(a.savedAt)||a.id.localeCompare(b.id));
+  const requestedPage = Math.max(0,Math.floor(Number(url.searchParams.get('historyPage'))||0));
+  const historyPage = Math.min(requestedPage,Math.max(0,Math.ceil(history.length/12)-1));
+  const recentIds = history.slice(historyPage*12,historyPage*12+12).map(session=>session.id);
+  const recentSessions = recentIds.length ? await loadSavedSessions(user,recentIds) : [];
 
   sendJson(res, {
     filters: {
@@ -267,12 +291,10 @@ async function handleDashboard(url, res, user) {
     },
     tracking: buildTracking(period2),
     skillPractice: summarizeSkillPractice(skillPeriod2),
-    centers: summarizeByCenter(filtered, filters),
+    centers: summarizeByCenter(filtered, {...filters, centers: filters.centers.length ? filters.centers.filter(center => options.centers.includes(center)) : options.centers}),
     employees: summarizeByEmployee(filtered, filters),
-    recentSessions: filtered
-      .slice()
-      .sort((a, b) => new Date(b.savedAt) - new Date(a.savedAt))
-      .slice(0, 12),
+    history: {page:historyPage,total:history.length,hasMore:(historyPage+1)*12<history.length},
+    recentSessions: recentIds.map(id=>recentSessions.find(session=>session.id===id)).filter(Boolean),
   });
 }
 
@@ -284,7 +306,7 @@ async function handleProgress(url, res, user) {
     return sendJson(res, { error: "Employee and center are required." }, 400);
   }
 
-  const sessions = await loadSavedSessions(user);
+  const sessions = (await loadSavedSessions(user)).filter(session => session.evaluationStatus !== 'pending');
   const now = new Date();
   const week = weekRange(now);
   const weekSessions = sessions.filter((session) => (
@@ -313,14 +335,15 @@ async function handleProgress(url, res, user) {
   });
 }
 
-async function loadSavedSessions(user) {
-  return (await store.listRecords('call',user)).map(parsed=>{
+async function loadSavedSessions(user, ids) {
+  return (await store.listRecords('call',user,{summary:!ids,ids})).filter(record=>!ids||ids.includes(record.filename)).map(parsed=>{
     const setup=parsed.setup||{};const report=String(parsed.report||'');
-    return {id:parsed.filename,employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',callDirection:setup.callDirection||'',difficulty:setup.difficulty||'',objectionType:setup.objectionType||'none',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),score:extractScore(report),appointmentSecured:extractAppointmentSecured(report),appointmentAttempted:extractAppointmentAttempted(report),mainOpportunity:extractMainOpportunity(report),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[]),report};
+    const summary=parsed.dashboardSummary;
+    return {id:parsed.filename,evaluationStatus:parsed.evaluationStatus||'complete',employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',callDirection:setup.callDirection||'',difficulty:setup.difficulty||'',objectionType:setup.objectionType||'none',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),score:summary?.score??extractScore(report),appointmentSecured:summary?summary.appointmentSecured:extractAppointmentSecured(report),appointmentAttempted:summary?summary.appointmentAttempted:extractAppointmentAttempted(report),mainOpportunity:summary?.mainOpportunity??extractMainOpportunity(report),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[]),report};
   });
 }
 async function loadSavedSkillPractices(user) {
-  return (await store.listRecords('skill',user)).map(parsed=>{const setup=parsed.setup||{};return {id:parsed.filename,employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',focusSkill:setup.focusSkill||'Focused skill',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[])};});
+  return (await store.listRecords('skill',user,{summary:true})).map(parsed=>{const setup=parsed.setup||{};return {id:parsed.filename,employeeName:setup.employeeName||'Unknown',center:setup.center||'Unknown',brand:setup.brand||'',focusSkill:setup.focusSkill||'Focused skill',savedAt:parsed.savedAt||dateFromSessionFilename(parsed.filename),transcript:parsed.transcript||[],transcriptText:parsed.transcriptText||transcriptToText(parsed.transcript||[])};});
 }
 
 function parseDashboardFilters(url) {
@@ -375,12 +398,13 @@ function summarizeByEmployee(sessions, filters) {
   const period2 = filterByDateRange(sessions, filters.period2Start, filters.period2End);
   const byEmployee = new Map();
   for (const session of period2) {
-    if (!byEmployee.has(session.employeeName)) byEmployee.set(session.employeeName, []);
-    byEmployee.get(session.employeeName).push(session);
+    const key = JSON.stringify([session.center, session.employeeName]);
+    if (!byEmployee.has(key)) byEmployee.set(key, []);
+    byEmployee.get(key).push(session);
   }
   return [...byEmployee.entries()]
-    .map(([employeeName, employeeSessions]) => ({
-      employeeName,
+    .map(([, employeeSessions]) => ({
+      employeeName: employeeSessions[0].employeeName,
       center: mostCommon(employeeSessions.map((session) => session.center)),
       summary: summarizeSessions(employeeSessions),
     }))
@@ -399,7 +423,10 @@ function summarizeSessions(sessions) {
     appointmentSecuredRate: knownAppointment ? round((secured / knownAppointment) * 100) : null,
     appointmentAttemptedRate: sessions.length ? round((attempted / sessions.length) * 100) : null,
     appointmentAttempts: attempted,
-    activeEmployees: new Set(sessions.map((session) => session.employeeName)).size,
+    appointmentsSecured: secured,
+    appointmentOutcomesKnown: knownAppointment,
+    appointmentOutcomesUnknown: sessions.length - knownAppointment,
+    activeEmployees: new Set(sessions.map((session) => JSON.stringify([session.center, session.employeeName]))).size,
   };
 }
 
@@ -474,18 +501,32 @@ function extractScore(report) {
 }
 
 function extractAppointmentSecured(report) {
-  const inviteLine = String(report || "").split(/\r?\n/).find((line) => /Invite|appointment that shows/i.test(line));
-  if (!inviteLine) return null;
-  if (/\b(no|not|did not|didn't|failed|missed|was not|wasn't)\b/i.test(inviteLine)) return false;
-  if (/\b(secured|confirmed|scheduled|booked|set|accepted|yes)\b/i.test(inviteLine)) return true;
-  return null;
+  return extractAppointmentOutcome(report).secured;
 }
 
 function extractAppointmentAttempted(report) {
-  const inviteLine = String(report || "").split(/\r?\n/).find((line) => /Invite|appointment that shows/i.test(line));
-  if (!inviteLine) return false;
-  if (/\b(asked|offered|attempted|invited|scheduled|booked|set|secured|confirmed)\b/i.test(inviteLine)) return true;
-  return false;
+  return extractAppointmentOutcome(report).attempted;
+}
+
+function extractAppointmentOutcome(report) {
+  const lines = String(report || "").replace(/\*\*/g, "").split(/\r?\n/);
+  const start = lines.findIndex(line => /^\s*[-#*]*\s*Invite\s*\/\s*appointment that shows\s*:/i.test(line));
+  if (start < 0) return {secured: null, attempted: false};
+  const section = [lines[start].replace(/^.*?appointment that shows\s*:/i, "")];
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line) && !/^[-*]\s/.test(line)) break;
+    if (/^[-*]\s+(?:Discovery|Active listening|Personal motivation|Match|Information discipline|Call Control)\s*:/i.test(line)) break;
+    if (/^\s*[-*]?\s*(?:missing step|to improve|(?:small )?opportunity|(?:you|the rep) should|(?:you|the rep) could have|for example)\b/i.test(line)) break;
+    section.push(line);
+  }
+  const text = section.join("\n").replace(/[‑–—]/g, "-");
+  const noAttempt = /\bno (?:clear )?(?:invitation|invite|ask|attempt)(?:\b|ation)|\bno appointment (?:was )?(?:requested|request)|\b(?:did not|didn't|never) (?:ask|invite|offer|attempt)/i.test(text);
+  const notBooked = /\bno (?:specific |confirmed |firm )?appointment(?:\s+\w+){0,5}\s(?:secured|set|booked|scheduled|made)|\b(?:did not|didn't|never) (?:secure|book|schedule|confirm)|\bprospect (?:declined|refused)|\b(?:declined|refused) (?:the |an? )?(?:visit|appointment|invite)/i.test(text);
+  if (noAttempt) return {secured: false, attempted: false};
+  const hasTime = /\b\d{1,2}(?::\d{2}|\s*(?:a\.?m\.?|p\.?m\.?|o.clock))\b|\b(?:tomorrow|tonight|next (?:monday|tuesday|wednesday|thursday|friday|saturday|sunday))\b/i.test(text);
+  const booked = /\b(?:booked|secured|secures|locked (?:in|down)|got (?:a |verbal |a specific )?(?:agreement|commitment|time))\b/i.test(text) || (hasTime && /\b(?:confirmed|confirms|committed|agreed|accepted|chose|chooses|specific appointment|specific time|verbal commitment|verbally confirming)\b/i.test(text));
+  const attempted = (!notBooked && booked) || /\b(?:clear|strong|direct|confident|verbal)\s+(?:\w+\s+)?invite\b|\b(?:invited|invitation|offered|asked|attempted)\b/i.test(text);
+  return {secured: notBooked ? false : booked ? true : null, attempted};
 }
 
 function extractMainOpportunity(report) {

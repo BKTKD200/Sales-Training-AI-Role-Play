@@ -27,16 +27,27 @@ export async function createStorage(env, root) {
   const query=async(sql,values=[])=> (await db.execute(sql,values))[0];
   return {
     mode:'mysql',
-    async listRecords(type,user) {
-      let sql='SELECT id,payload FROM ffb_records WHERE record_type=?';const args=[type];
+    async listRecords(type,user,{summary=false,ids}={}) {
+      const payload=summary ? "CASE WHEN JSON_EXTRACT(payload,'$.dashboardSummary') IS NOT NULL THEN JSON_REMOVE(payload,'$.transcript','$.transcriptText','$.report') ELSE JSON_REMOVE(payload,'$.transcript','$.transcriptText') END AS payload" : 'payload';
+      let sql=`SELECT id,${payload} FROM ffb_records WHERE record_type=?`;const args=[type];
       if(user?.role==='trainer'){sql+=' AND (user_id=? OR (user_id IS NULL AND center=? AND employee_name=?))';args.push(user.id,user.center,user.employeeName);}
       if(user?.role==='manager'){const allowed=user.allowedCenters||[];if(!allowed.length)return [];sql+=` AND center IN (${allowed.map(()=>'?').join(',')})`;args.push(...allowed);}
+      if(ids){if(!ids.length)return [];sql+=` AND id IN (${ids.map(()=>'?').join(',')})`;args.push(...ids);}
       return (await query(sql,args)).map(row=>({...JSON.parse(row.payload),filename:row.id}));
     },
     async saveRecord(type,id,record,userId=null) {
       const owners=await query('SELECT id FROM ffb_users WHERE center=? AND employee_name=? LIMIT 1',[record.setup.center,record.setup.employeeName]);
       const ownerId=owners[0]?.id||null;
       await query('INSERT INTO ffb_records (id,record_type,user_id,center,employee_name,payload) VALUES (?,?,?,?,?,?)',[id,type,ownerId,record.setup.center,record.setup.employeeName,JSON.stringify({...record,recordedBy:userId})]);
+      return {filename:id};
+    },
+    async updateRecord(type,id,record,user) {
+      let sql='UPDATE ffb_records SET payload=? WHERE record_type=? AND id=?';
+      const args=[JSON.stringify(record),type,id];
+      if(user?.role==='trainer'){sql+=' AND (user_id=? OR (user_id IS NULL AND center=? AND employee_name=?))';args.push(user.id,user.center,user.employeeName);}
+      if(user?.role==='manager'){const allowed=user.allowedCenters||[];if(!allowed.length)throw new Error('Record access denied.');sql+=` AND center IN (${allowed.map(()=>'?').join(',')})`;args.push(...allowed);}
+      const result=await query(sql,args);
+      if(!result.affectedRows)throw new Error('Record update failed.');
       return {filename:id};
     },
     async importRecords(records) {
@@ -92,6 +103,7 @@ function createFileStorage(root) {
       }return records;
     },
     async saveRecord(type,id,record){await mkdir(dir(type),{recursive:true});const target=path.join(dir(type),id);await writeFile(target+'.tmp',JSON.stringify(record,null,2));await rename(target+'.tmp',target);return {filename:id};},
+    async updateRecord(type,id,record){if(path.basename(id)!==id)throw new Error('Invalid record.');await readFile(path.join(dir(type),id));return this.saveRecord(type,id,record);},
     async close(){},
   };
 }
