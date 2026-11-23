@@ -70,13 +70,13 @@
 
         <form id="dashboard-filters" class="form app-view">
           <fieldset>
-            <legend>Centers</legend>
-            <div id="dashboard-centers" class="check-list"></div>
+            <legend>Center</legend>
+            <select id="dashboard-centers" aria-label="Dashboard center"></select>
           </fieldset>
 
           <fieldset>
-            <legend>Employees</legend>
-            <div id="dashboard-employees" class="check-list"></div>
+            <legend>Employee</legend>
+            <select id="dashboard-employees" aria-label="Dashboard employee"></select>
           </fieldset>
 
           <fieldset>
@@ -185,6 +185,7 @@
           <section class="metric-card">
             <span>Appointment secured rate</span>
             <strong id="metric-appointment-rate">-</strong>
+            <small id="metric-appointment-detail"></small>
           </section>
           <section class="metric-card">
             <span>Appointment attempt rate</span>
@@ -297,9 +298,14 @@
         <details class="dashboard-section dashboard-details">
           <summary>
             <span>Recent completed practice calls</span>
-            <small>Most recent saved sessions</small>
+            <small>Most recent saved sessions in time frame 2</small>
           </summary>
           <ol id="recent-sessions" class="recent-sessions"></ol>
+          <div class="recent-session-links">
+            <button id="history-previous" type="button" disabled>Newer calls</button>
+            <span id="history-page" aria-live="polite"></span>
+            <button id="history-next" type="button" disabled>Older calls</button>
+          </div>
         </details>
       </section>
     </main>

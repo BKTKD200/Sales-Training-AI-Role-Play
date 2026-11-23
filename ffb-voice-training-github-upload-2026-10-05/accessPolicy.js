@@ -20,5 +20,6 @@ export function dashboardOptions(user, roster, records = []) {
   return {
     centers: unique([...Object.keys(scopedRoster), ...visibleRecords.map(record => record.center)]),
     employees: unique([...Object.values(scopedRoster).flat(), ...visibleRecords.map(record => record.employeeName)]),
+    employeesByCenter: Object.fromEntries(unique([...Object.keys(scopedRoster), ...visibleRecords.map(record => record.center)]).map(center => [center, unique([...(scopedRoster[center] || []), ...visibleRecords.filter(record => record.center === center).map(record => record.employeeName)])])),
   };
 }
