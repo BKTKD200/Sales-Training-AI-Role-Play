@@ -1,5 +1,9 @@
 const state = {
   config: null,
+  user: null,
+  dashboardOptions: null,
+  dashboardRequest: 0,
+  historyPage: 0,
   setup: null,
   pc: null,
   dc: null,
@@ -55,6 +59,7 @@ const els = {
   metricScore2: document.querySelector("#metric-score-2"),
   metricImprovement: document.querySelector("#metric-improvement"),
   metricAppointmentRate: document.querySelector("#metric-appointment-rate"),
+  metricAppointmentDetail: document.querySelector("#metric-appointment-detail"),
   metricAppointmentAttemptRate: document.querySelector("#metric-appointment-attempt-rate"),
   metricEmployees: document.querySelector("#metric-employees"),
   metricSkillPractices: document.querySelector("#metric-skill-practices"),
@@ -67,6 +72,9 @@ const els = {
   skillsPracticed: document.querySelector("#skills-practiced"),
   recentSkillPractices: document.querySelector("#recent-skill-practices"),
   recentSessions: document.querySelector("#recent-sessions"),
+  historyPrevious: document.querySelector('#history-previous'),
+  historyNext: document.querySelector('#history-next'),
+  historyPage: document.querySelector('#history-page'),
   progressModal: document.querySelector("#practice-progress-modal"),
   progressWeek: document.querySelector("#progress-week"),
   progressCompleted: document.querySelector("#progress-completed"),
@@ -83,6 +91,7 @@ async function boot() {
   if (response.status === 401) { window.location.replace("/login"); return; }
   state.config = await response.json();
   const auth = await (await fetch("/api/auth")).json();
+  state.user = auth.user;
   if(auth.user?.mustChangePassword){window.location.replace('/account');return;}
   const accountLink=document.querySelector('#account-link');
   accountLink.hidden=auth.mode!=='accounts';
@@ -118,9 +127,19 @@ async function boot() {
   els.toggleTranscriptButton.addEventListener("click", toggleTranscript);
   document.addEventListener("click", handleFullReportToggle);
   document.addEventListener("click", handleSkillPracticeClick);
+  document.addEventListener("click", retrySavedEvaluation);
   els.practiceTabButton.addEventListener("click", () => switchTab("practice"));
   els.dashboardTabButton.addEventListener("click", () => switchTab("dashboard"));
   els.refreshDashboardButton.addEventListener("click", loadDashboard);
+  els.historyPrevious.addEventListener('click',()=>{state.historyPage=Math.max(0,state.historyPage-1);loadDashboard();});
+  els.historyNext.addEventListener('click',()=>{state.historyPage++;loadDashboard();});
+  [els.period1Start,els.period1End,els.period2Start,els.period2End].forEach(input=>input.addEventListener('change',()=>{state.historyPage=0;}));
+  els.dashboardCenters.addEventListener("change", () => {
+    state.historyPage = 0;
+    renderDashboardEmployeeOptions("");
+    loadDashboard();
+  });
+  els.dashboardEmployees.addEventListener("change", () => {state.historyPage=0;loadDashboard();});
   els.progressContinueButton.addEventListener("click", beginRoleplayFromProgress);
   document.querySelector("#progress-cancel-button").addEventListener("click", cancelProgress);
   document.addEventListener("keydown", event => {
@@ -181,32 +200,50 @@ function setDefaultDashboardDates() {
 }
 
 async function loadDashboard() {
+  const requestId = ++state.dashboardRequest;
   els.dashboardStatus.textContent = "Loading";
   try {
     const params = new URLSearchParams({
-      centers: getCheckedValues(els.dashboardCenters).join(","),
-      employees: getCheckedValues(els.dashboardEmployees).join(","),
+      centers: els.dashboardCenters.value || "",
+      employees: els.dashboardEmployees.value || "",
+      historyPage: String(state.historyPage),
       period1Start: els.period1Start.value,
       period1End: els.period1End.value,
       period2Start: els.period2Start.value,
       period2End: els.period2End.value,
     });
     const dashboard = await fetchJson(`/api/dashboard?${params}`);
+    if (requestId !== state.dashboardRequest) return;
     renderDashboardFilters(dashboard);
     renderDashboard(dashboard);
     els.dashboardStatus.textContent = "Updated";
   } catch (error) {
+    if (requestId !== state.dashboardRequest) return;
     els.dashboardStatus.textContent = error.message;
   }
 }
 
 function renderDashboardFilters(dashboard) {
-  renderCheckList(els.dashboardCenters, dashboard.options.centers, dashboard.filters.centers, "center-filter");
-  renderCheckList(els.dashboardEmployees, dashboard.options.employees, dashboard.filters.employees, "employee-filter");
+  state.dashboardOptions = dashboard.options;
+  const ownOnly = dashboard.options.centers.length === 1;
+  const selectedCenter = ownOnly ? dashboard.options.centers[0] : (dashboard.filters.centers[0] || "");
+  els.dashboardCenters.innerHTML = `${ownOnly ? "" : '<option value="">All accessible centers</option>'}${dashboard.options.centers.map(center => `<option value="${escapeHtml(center)}">${escapeHtml(center)}</option>`).join("")}`;
+  els.dashboardCenters.value = selectedCenter;
+  els.dashboardCenters.disabled = ownOnly;
+  renderDashboardEmployeeOptions(dashboard.filters.employees[0] || "");
   els.period1Start.value = dashboard.filters.period1Start;
   els.period1End.value = dashboard.filters.period1End;
   els.period2Start.value = dashboard.filters.period2Start;
   els.period2End.value = dashboard.filters.period2End;
+}
+
+function renderDashboardEmployeeOptions(selected) {
+  const center = els.dashboardCenters.value;
+  const options = state.dashboardOptions?.employeesByCenter?.[center] || [];
+  const personal = state.user?.role === "trainer";
+  els.dashboardEmployees.innerHTML = `${personal ? "" : `<option value="">${center ? "All employees at this center" : "Select a center first"}</option>`}${options.map(employee => `<option value="${escapeHtml(employee)}">${escapeHtml(employee)}</option>`).join("")}`;
+  els.dashboardEmployees.value = personal ? (options[0] || "") : (options.includes(selected) ? selected : "");
+  els.dashboardEmployees.disabled = personal || !center;
 }
 
 function renderCheckList(container, options, selected, name) {
@@ -236,9 +273,15 @@ function renderDashboard(dashboard) {
   els.metricScore2.textContent = formatScore(period2.avgScore);
   els.metricImprovement.textContent = formatDelta(dashboard.aggregate.improvement);
   els.metricAppointmentRate.textContent = formatPercent(period2.appointmentSecuredRate);
+  els.metricAppointmentRate.title = `${period2.appointmentsSecured} booked / ${period2.appointmentOutcomesKnown} known outcomes; ${period2.appointmentOutcomesUnknown} need review. Based on role-play appointments, not attendance.`;
+  els.metricAppointmentDetail.textContent = `${period2.appointmentsSecured} booked / ${period2.appointmentOutcomesKnown} classified${period2.appointmentOutcomesUnknown ? `; ${period2.appointmentOutcomesUnknown} need review` : ''}`;
   els.metricAppointmentAttemptRate.textContent = formatPercent(period2.appointmentAttemptedRate);
   els.metricEmployees.textContent = formatNumber(period2.activeEmployees);
   els.metricSkillPractices.textContent = formatNumber(dashboard.skillPractice?.completed || 0);
+  state.historyPage = dashboard.history.page;
+  els.historyPrevious.disabled = dashboard.history.page === 0;
+  els.historyNext.disabled = !dashboard.history.hasMore;
+  els.historyPage.textContent = dashboard.history.total ? `Page ${dashboard.history.page+1} of ${Math.ceil(dashboard.history.total/12)} · ${dashboard.history.total} saved calls` : 'No saved calls in time frame 2';
 
   els.centerComparison.innerHTML = dashboard.centers.length
     ? dashboard.centers.map((row) => {
@@ -251,7 +294,7 @@ function renderDashboard(dashboard) {
           <td>${formatScore(row.period2.avgScore)}</td>
           <td>${formatDelta(row.improvement)}</td>
           <td>${formatDelta(vsAggregate)}</td>
-          <td>${formatPercent(row.period2.appointmentSecuredRate)}</td>
+          <td>${formatPercent(row.period2.appointmentSecuredRate)}${row.period2.appointmentOutcomesUnknown ? `<small> · ${row.period2.appointmentOutcomesUnknown} need review</small>` : ''}</td>
         </tr>
       `;
     }).join("")
@@ -264,7 +307,7 @@ function renderDashboard(dashboard) {
         <td>${escapeHtml(row.center)}</td>
         <td>${formatNumber(row.summary.callsCompleted)}</td>
         <td>${formatScore(row.summary.avgScore)}</td>
-        <td>${formatPercent(row.summary.appointmentSecuredRate)}</td>
+        <td>${formatPercent(row.summary.appointmentSecuredRate)}${row.summary.appointmentOutcomesUnknown ? `<small> · ${row.summary.appointmentOutcomesUnknown} need review</small>` : ''}</td>
       </tr>
     `).join("")
     : emptyRow(5, "No employees have calls in time frame 2.");
@@ -394,6 +437,7 @@ function renderRecentSession(session, index) {
       <details class="recent-session-detail">
         <summary>
           <strong>${escapeHtml(session.employeeName)}</strong>
+          <span>${escapeHtml(session.center)} · ${formatDateTime(session.savedAt)}${session.evaluationStatus === 'pending' ? ' · Evaluation pending' : ''}</span>
         </summary>
         <div class="recent-session-links">
           <a href="#${transcriptId}">Transcript</a>
@@ -405,6 +449,7 @@ function renderRecentSession(session, index) {
         </section>
         <section id="${reportId}" class="saved-call-block saved-report-block">
           <h3>Report</h3>
+          ${session.evaluationStatus === 'pending' ? `<p>Transcript saved. Evaluation pending.</p><button type="button" data-retry-evaluation="${escapeHtml(session.id)}">Retry evaluation</button>` : ''}
           <div class="report-content saved-report-content">
             ${report ? renderReportHtml(report) : `<p class="report-placeholder">No report was saved for this call.</p>`}
           </div>
@@ -412,6 +457,22 @@ function renderRecentSession(session, index) {
       </details>
     </li>
   `;
+}
+
+async function retrySavedEvaluation(event) {
+  const button = event.target.closest?.('[data-retry-evaluation]');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.textContent = 'Evaluating…';
+  try {
+    const payload = await fetchJson('/api/evaluate',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recordId:button.dataset.retryEvaluation})});
+    if(payload.pending) throw new Error(payload.error);
+    await loadDashboard();
+  } catch(error) {
+    button.disabled = false;
+    button.textContent = 'Retry evaluation';
+    els.dashboardStatus.textContent = error.message;
+  }
 }
 
 function renderSavedTranscript(session) {
@@ -742,7 +803,13 @@ async function endAndEvaluate() {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || payload.error || "Could not evaluate.");
-
+    if (payload.pending) {
+      renderReport(payload.error, {plain:true});
+      els.saveStatus.textContent = 'Transcript saved; evaluation pending';
+      setStatus('Evaluation pending', 'Your transcript is saved. Retry evaluation from your dashboard.');
+      loadDashboard();
+      return;
+    }
     renderReport(payload.report);
     els.saveStatus.textContent = payload.saved?.filename ? `Saved: ${payload.saved.filename}` : "Saved";
     setStatus("Evaluation ready", "Review the coaching report. You can start another practice when ready.");
