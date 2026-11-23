@@ -371,11 +371,11 @@ function splitFilter(value) {
 }
 
 function filterByDateRange(sessions, start, end) {
-  const startTime = new Date(`${start}T00:00:00`).getTime();
-  const endTime = new Date(`${end}T23:59:59.999`).getTime();
   return sessions.filter((session) => {
-    const time = new Date(session.savedAt).getTime();
-    return Number.isFinite(time) && time >= startTime && time <= endTime;
+    const date = new Date(session.savedAt);
+    if (!Number.isFinite(date.getTime())) return false;
+    const day = toDateInputValue(date);
+    return day >= start && day <= end;
   });
 }
 
@@ -548,10 +548,10 @@ function cleanDate(value) {
 }
 
 function toDateInputValue(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  toDateInputValue.formatter ||= new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'});
+  const parts = toDateInputValue.formatter.formatToParts(date);
+  const part = type => parts.find(value=>value.type===type).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 function addDays(date, days) {
@@ -561,23 +561,21 @@ function addDays(date, days) {
 }
 
 function weekRange(date) {
-  const start = new Date(date);
-  start.setHours(0, 0, 0, 0);
-  const day = start.getDay();
+  const start = new Date(`${toDateInputValue(date)}T12:00:00Z`);
+  const day = start.getUTCDay();
   const diffToMonday = day === 0 ? -6 : 1 - day;
-  start.setDate(start.getDate() + diffToMonday);
-  const end = addDays(start, 6);
-  end.setHours(23, 59, 59, 999);
+  start.setUTCDate(start.getUTCDate() + diffToMonday);
+  const end = new Date(start);
+  end.setUTCDate(end.getUTCDate() + 6);
   return { start, end };
 }
 
 function isWithinRange(value, start, end) {
-  const time = new Date(value).getTime();
-  return Number.isFinite(time) && time >= start.getTime() && time <= end.getTime();
+  return filterByDateRange([{savedAt:value}],toDateInputValue(start),toDateInputValue(end)).length > 0;
 }
 
 function formatDisplayDate(date) {
-  return date.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString("en-US", {timeZone:'America/New_York', month: "short", day: "numeric", year: "numeric" });
 }
 
 function round(value) {
