@@ -190,9 +190,10 @@ function switchTab(tabName) {
 function setDefaultDashboardDates() {
   const today = new Date();
   const period2End = toDateInputValue(today);
-  const period2Start = toDateInputValue(addDays(today, -30));
-  const period1End = toDateInputValue(addDays(new Date(period2Start), -1));
-  const period1Start = toDateInputValue(addDays(new Date(period1End), -30));
+  const shiftDate = (value,days) => {const date=new Date(`${value}T12:00:00Z`);date.setUTCDate(date.getUTCDate()+days);return date.toISOString().slice(0,10);};
+  const period2Start = shiftDate(period2End,-30);
+  const period1End = shiftDate(period2Start,-1);
+  const period1Start = shiftDate(period1End,-30);
   els.period1Start.value = period1Start;
   els.period1End.value = period1End;
   els.period2Start.value = period2Start;
@@ -1141,7 +1142,7 @@ function emptyRow(columns, text) {
 function formatDateTime(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString([], { month: "short", day: "numeric", year: "numeric" });
+  return date.toLocaleDateString([], {timeZone:'America/New_York', month: "short", day: "numeric", year: "numeric" });
 }
 
 function formatDateOnly(value) {
@@ -1151,7 +1152,9 @@ function formatDateOnly(value) {
 }
 
 function toDateInputValue(date) {
-  return date.toISOString().slice(0, 10);
+  const parts = new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(date);
+  const part = type => parts.find(value=>value.type===type).value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
 }
 
 function addDays(date, days) {
