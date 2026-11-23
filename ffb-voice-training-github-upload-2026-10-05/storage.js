@@ -33,7 +33,7 @@ export async function createStorage(env, root) {
       if(user?.role==='trainer'){sql+=' AND (user_id=? OR (user_id IS NULL AND center=? AND employee_name=?))';args.push(user.id,user.center,user.employeeName);}
       if(user?.role==='manager'){const allowed=user.allowedCenters||[];if(!allowed.length)return [];sql+=` AND center IN (${allowed.map(()=>'?').join(',')})`;args.push(...allowed);}
       if(ids){if(!ids.length)return [];sql+=` AND id IN (${ids.map(()=>'?').join(',')})`;args.push(...ids);}
-      return (await query(sql,args)).map(row=>({...JSON.parse(row.payload),filename:row.id}));
+      return (await query(sql,args)).map(row=>({...decodeRecordPayload(row.payload),filename:row.id}));
     },
     async saveRecord(type,id,record,userId=null) {
       const owners=await query('SELECT id FROM ffb_users WHERE center=? AND employee_name=? LIMIT 1',[record.setup.center,record.setup.employeeName]);
@@ -84,6 +84,12 @@ export async function createStorage(env, root) {
     async deleteLogin(hash){await query('DELETE FROM ffb_logins WHERE token_hash=?',[hash]);},
     async close(){await db.end();},
   };
+}
+
+export function decodeRecordPayload(payload) {
+  if (typeof payload === 'string' || Buffer.isBuffer(payload)) return JSON.parse(String(payload));
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) return payload;
+  throw new Error('Invalid stored training record.');
 }
 
 export function recordFilename(type,record) {
